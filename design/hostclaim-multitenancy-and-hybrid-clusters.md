@@ -5,6 +5,7 @@
  http://creativecommons.org/licenses/by/3.0/legalcode
 -->
 
+<!-- cSpell:ignore Sylva Schiff Kanod argocd GitOps -->
 # HostClaim: multi-tenancy and hybrid clusters
 
 ## Status
@@ -44,7 +45,6 @@ cannot share its servers with other clusters.
 
 There is another model where a single management cluster is used to create and
 manage several clusters across a set of bare-metal servers. This is the focus
-<!-- cSpell:ignore Sylva Schiff -->
 of the [Sylva Project](https://sylvaproject.org/) of the Linux foundation.
 Another example is [Das Schiff](https://github.com/telekom/das-schiff).
 
@@ -115,7 +115,9 @@ implementation details of the compute resource.
 
 ### User Stories
 
-#### As a user I would like to execute a workload on an arbitrary server
+#### Deployment of Simple Workloads
+
+As a user I would like to execute a workload on an arbitrary server.
 
 The OS image is available in qcow format on a remote server at ``url_image``.
 It supports cloud-init and a script can launch the workload at boot time
@@ -206,7 +208,9 @@ value depends on the characteristics of the computer.
 * When I destroy the host, the association is broken and another user can take
   over the server.
 
-#### As an infrastructure administrator I would like to host several isolated clusters
+#### Multi-tenancy
+
+As an infrastructure administrator I would like to host several isolated clusters
 
 All the servers in the data-center are registered as BareMetalHost in one or
 several namespaces under the control of the infrastructure manager. Namespaces
@@ -233,7 +237,9 @@ and are destroyed unless they are tagged for node reuse. The BareMetalHosts are
 recycled and are bound to new HostClaims, potentially belonging to other
 clusters.
 
-#### As a cluster administrator I would like to build a cluster with different kind of nodes
+#### Hybrid Clusters
+
+As a cluster administrator I would like to build a cluster with different kind of nodes.
 
 This scenario assumes that:
 
@@ -281,7 +287,9 @@ Controllers for disposable resources such as virtual machine typically do not
 use hostSelectors. Controllers for a "bare-metal as a service" service
 may use selectors.
 
-#### As a cluster administrator I would like to install a new baremetal cluster from a transient cluster
+#### Manager Cluster Bootstrap
+
+As a cluster administrator I would like to install a new baremetal cluster from a transient cluster.
 
 The bootstrap process can be performed as usual from an ephemeral cluster
 (e.g., a KinD cluster). The constraint that all resources must be in the same
@@ -304,4 +312,189 @@ controller is beyond the scope of this specification.
 
 ## Design Details
 
-TBD.
+### Implementation Details/Notes/Constraints
+
+### Risks and Mitigations
+
+#### Security Impact of Making BareMetalHost Selection Cluster-wide
+
+The main difference between Metal3 machines and HostClaims it the
+selection process where a HostClaim can be bound to a BareMetalHost
+in another namespace. We must make sure that this behavior is expected
+from the owner of BareMetalHost resources, especially when we upgrade the
+metal3 cluster api provider to a version supporting HostClaim.
+
+The solution is to enforce that BareMetalHost that can be bound to a
+HostClaim have a label (proposed name: ``hosts.metal3.io/namespaces``)
+restricting authorized HostClaims to specific namespaces. The value could be
+either ``*`` for no constraint, or a comma separated list of namespace names.
+
+#### Tenants Trying to Bypass the Selection Mechanism
+
+The fact that a HostClaim is bound to a specific BareMetalHost will appear
+as a label in the HostClaim and the HostClaim controller will use it to find
+the associated BareMetalHost. This label could be modified by a malicious
+tenant.
+
+But the BareMetalHost has also a consumer reference. The label is only an
+indication of the binding. If the consumer reference is invalid (different
+from the HostClaim label), the label MUST be erased and the HostClaim
+controller MUST NOT accept the binding.
+
+#### Performance Impact
+
+The proposal introduces a new resource with an associated controller between
+the Metal3Machine and the BareMetalHost. There will be some duplication
+of information between the BareMetalHost and the HostClaim status. The impact
+for each node should still be limited especially when compared to the cost of
+each Ironic action.
+
+Because we plan to have several controllers for different kind of compute
+resource, one can expect a few controllers working on the same custom resource.
+This may create additional pressure on Kubernetes api server. It is possible
+to limit the amount of exchanged information on a specific controller using
+server based filters on the watch/list. To use this feature on current
+Kubernetes versions, the HostClaim kind field must be copied in a label.
+
+#### Impact on Other Cluster Api Components
+
+There should be none: other components should mostly rely on Machine and Cluster
+objects. Some tools may look at Metal3Machine conditions where some condition
+names may be modified but the semantic of Ready condition will be preserved.
+
+### Work Items
+
+There are roughly three parts:
+
+* Creation of the HostClaim resource and controller for BareMetal. This is
+  a separate project or included as part of the baremetal-operator project.
+* Modification of cluster-api-provider-metal3: introduction of a new variant
+  of Metal3MachineManager.
+* Modification of the companion controllers to bring back feature parity
+  with direct binding to BareMetalHosts.
+
+### Dependencies
+
+### Test Plan
+
+### Upgrade / Downgrade Strategy
+
+### Version Skew Strategy
+
+## Drawbacks
+
+## Alternatives
+
+### Multi-Tenancy Without HostClaim
+
+We assume that we have a Kubernetes cluster managing a set of clusters for
+cluster administrators (called tenants in the following). Multi-tenancy
+is a way to ensure that tenants have only control over their clusters.
+
+There are at least two other ways to implement multi-tenancy without HostClaim.
+They roughly correspond to proxy the full definition of the cluster or the
+BareMetalHost itself.
+
+#### Isolation Through Overlays
+
+A solution to multi-tenancy is to hide all the cluster resources to the end
+user. In that approach clusters and BareMetalHosts are defined in a single
+namespace but the process in charge of cluster creation ensures that resources
+from different clusters do not overlap.
+
+This approach was explored in the first versions of the Kanod project. Clusters
+must be described by the tenant in a git repository and the descriptions are
+imported by a GitOps framework (argocd). The definitions are treated by an
+argocd plugin that translates the yaml expressing the user intent in Kubernetes
+resources and the naming of resources created by this plugin will ensure
+isolation.
+
+Rather than a translation plugin, a set of custom resources would be a better
+approach. We must ensure that they are defined in separate namespaces.
+
+The approach has many drawbacks:
+
+* The plugin or the controllers for the abstract clusters are fairly complex
+  applications if we want to support many options
+  and they are part of the trusted computing base of the cluster manager.
+* We introduce a new level of access control distinct from the Kubernetes
+  model. If we want tooling/observability around the created resources, we
+  need custom tools that respect this new policy or we need to reflect
+  everything we want to observe in the new custom resources.
+* The approach does not solve the hybrid cluster problem.
+
+#### Ephemeral BareMetalHost
+
+Another solution is to have separate namespaces for each cluster but to
+import BareMetalHost in those namespaces on demand when new compute resources
+are needed.
+
+The cluster needs a resource acting as a source of BareMetalServers
+parameterized by requirements on servers and the number of replicas. The
+notion of
+[BareMetalPool](https://gitlab.com/Orange-OpenSource/kanod/baremetalpool)
+in Kanod is the equivalent of replica sets for pods. This notion also appears in
+[this proposal](https://github.com/metal3-io/metal3-docs/pull/268) for a
+metal3host operator. The number of replicas may be updated by a
+[controller](https://gitlab.com/Orange-OpenSource/kanod/kanod-poolscaler)
+checking the requirements of machine deployments and control-planes.
+
+The main security risk is that when a cluster releases a
+BareMetalHost, it may keep the credentials giving full control over the server.
+This can be solved if those credentials are temporary. In Kanod BareMetalPool
+obtain new servers from a rest api implemented by a
+[BareMetalHost broker](https://gitlab.com/Orange-OpenSource/kanod/brokerdef).
+The broker implementation uses either the fact that Redfish is in fact a Rest
+API to implement a proxy or the capability of Redfish to create new users
+with an Operator role to implemented BareMetalHost resources with a limited
+lifetime.
+
+The pros of the approach are:
+
+* Support for pivot operation even for tenant clusters because it exposes a
+  complete bare-metal as a service solution.
+* Cluster administrators have full access to the BMC and can configure servers
+  to their needs with custom procedures (not exposed by standard Metal3
+  controllers).
+* Network isolation can be done before the BareMetalHost is created in the scope
+  of the cluster. There is no transfer of server from one network configuration
+  to another that may invalidate parts of introspection.
+
+The cons of the BareMetalPool approach are:
+
+* The implementation of the broker with its dedicated server is fairly complex.
+* To have full dynamicity over the pool of servers, a new kind of autoscaler is
+  needed.
+* Unnecessary inspection of the servers when they are transferred from a
+  cluster (tenant) to another one.
+* The current implementation of the proxy is limited to the Redfish protocol
+  and would require significant work for IPMI.
+
+### Hybrid Clusters Without HostClaim
+
+#### Control-Planes as a Service
+The Kubernetes control-plane is an application with a single endpoint. Some
+Cluster Api control-plane providers implement directly a factory for new
+control-planes without relying on the infrastructure provider. Usually this
+control-plane is hosted in the management cluster as a regular Kubernetes
+application. [Kamaji]() or []() implement this approach.
+
+The cluster is hybrid because the control-plane pods are not hosted on standard
+nodes but workers are usually all implemented by a single infrastructure
+provider and are homogeneous.
+
+The approach solves the problem of sharing resources for control-planes but
+does not address the creation of clusters with distinct needs for workers.
+
+#### Cluster API Hack
+
+#### Bring Your Own Hosts
+Bring Your Own Host (BYOH) is a cluster api provider that uses existing compute 
+resources that run a specific agent used for registering the resource and
+deploying Kubernetes on the server.
+
+BYOH does not impose many constraints on the compute resource. 
+### Alternative implementations of HostClaims
+#### HostClaims in the BareMetalHost Namespace
+
+## References
