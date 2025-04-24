@@ -5,7 +5,7 @@
  http://creativecommons.org/licenses/by/3.0/legalcode
 -->
 
-<!-- cSpell:ignore Sylva Schiff Kanod argocd GitOps -->
+<!-- cSpell:ignore Sylva Schiff Kanod ArgoCD GitOps -->
 # HostClaim: Sharing BareMetalHost between Multiple Tenants
 
 ## Status
@@ -17,7 +17,7 @@ Provisional
 We introduce a new Custom Resource (named HostClaim) which will facilitate
 the creation of multiple clusters for different tenants. A HostClaim decouples
 the client need from the actual implementation of the
-compute resource: it establishes a security boundary
+compute resource: it establishes a security boundary.
 
 A HostClaim expresses that one wants to start a given
 OS image with an initial configuration (typically cloud-init or ignition
@@ -30,12 +30,12 @@ credentials of servers are not exposed to the tenant).
 
 ## Motivation
 
-The standard approach to implementing multi-tenancy in cluster-api is to follow the
-[multi tenancy contract](https://cluster-api.sigs.k8s.io/developer/architecture/controllers/multi-tenancy#contract).
+The standard approach to implementing multi-tenancy in Cluster API is to follow the
+[multi-tenancy contract](https://cluster-api.sigs.k8s.io/developer/architecture/controllers/multi-tenancy#contract).
 
 To adhere to this contract with cluster-api-provider-metal3, the clusters must
-be put in different namespaces and the BareMetalHost objects must be defined
-in those namespaces. In this setup, the tenants are the owners of the servers
+be placed in different namespaces, and the BareMetalHost objects must be defined
+in those namespaces. In this setup, the tenants are the owners of the servers,
 and it becomes difficult to share the same server between different clusters if
 they belong to different tenants.
 
@@ -48,19 +48,20 @@ have visibility and probably control over all clusters and servers as the server
 credentials are stored with the BareMetalHost resource.
 
 We need to relax the constraint that the cluster and the BareMetalHosts are
-in the same namespace but we also need a solution that gives sufficient control
+in the same namespace, but we also need a solution that provides sufficient control
 and visibility over the workload deployed on those servers so that tenants
 can maintain the level of information they have had so far.
 
 This proposal tackles the objective through three changes:
 
-* it introduces a new resource called HostClaim that decouples
+* It introduces a new resource called HostClaim that decouples
   the definition of the workload performed by
   the Metal3 machine controller from the actual compute resource.
   This resource acts as a security boundary.
-* it uses the HardwareData resource as the only visible resource for end-users
-  containing both hardware details and metadata used for selection and templating.
-* it introduces a HostDeployPolicy resource that describes the namespaces that contain
+* It uses the HardwareData resource as the only visible resource for end-users,
+  containing both hardware details and metadata used for selection and template
+  specialization.
+* It introduces a HostDeployPolicy resource that describes the namespaces that contain
   the HostClaims authorized to be bound to BareMetalHosts in the namespace of the
   HostDeployPolicy resource.
 
@@ -68,20 +69,20 @@ This proposal tackles the objective through three changes:
 
 * Split responsibilities between infrastructure teams (role *infrastructure manager*),
   who manage servers, and cluster administrators (role *cluster manager*),
-  who create/update/scale bare-metal clusters deployed
+  who create update and scale bare-metal clusters deployed
   on those servers, using traditional Kubernetes RBAC to ensure isolation.
 * Define a resource where a user can request a compute resource to execute
   an arbitrary workload described by an OS image and an initial configuration.
   The user (role *end-user*, a cluster manager is an end-user) does not need
   to know exactly which BareMetalHost is used and does not control its BMC.
-* Using BareMetalHosts defined in other clusters. Support as described here
-  will be limited to the use with cluster-api as it will be handled at the
+* Use BareMetalHosts defined in other clusters. Support, as described here,
+  will be limited to use with Cluster API as it will be handled at the
   level of the Metal3Machine.
 
 ### Non-Goals
 
 * Compute resource quotas. The HostClaim resource should make it possible to
-  develop a framework to limit the number/size of compute resources allocated
+  develop a framework to limit the number and size of compute resources allocated
   to a tenant, similar to how quotas work for pods. However, the specification
   of such a framework will be addressed in another design document.
 * Implementing network isolation between tenant clusters using a common set
@@ -96,22 +97,24 @@ This proposal tackles the objective through three changes:
 ##### User Point of View
 
 As an *end-user*, I would like to execute a workload on an arbitrary server.
+Servers are managed by a hardware administrator.
 
 The OS image is available in qcow format on a remote server at ``url_image``.
-It supports cloud-init and a script can launch the workload at boot time
+It supports cloud-init, and a script can launch the workload at boot time
 (e.g., a systemd service).
 
-The cluster offers bare-metal as a service using Metal3 baremetal-operator.
+The cluster offers bare-metal as a service using the Metal3 baremetal-operator.
 However, as a regular user, I am not allowed to directly access the definitions
 of the servers, but I can read the result of the inspection (HardwareData).
-The HardwareData resource also contains a copy of the metadata of the
-BareMetalHost visible to the end-user.
+The HardwareData resource also contains a copy of the metadata (labels and
+annotations of the resource) of the BareMetalHost visible to the end-user.
 
 All HardwareData are labeled with an ``infra-kind`` label whose
-value depends on the characteristics of the computer.
+value depends on the characteristics of the hardware. This label was set
+by the hardware administrator on the BareMetalHost when it was defined.
 
-* I can read HardwareData in namespace ``infra``. I can find which selector
-  I should use to find a machine with the right hardware details.
+* I can read HardwareData in the namespace ``infra``. I can find which selector
+  I should use to locate a machine with the right hardware details.
 * I create a resource with the following content:
 
   ```yaml
@@ -119,6 +122,7 @@ value depends on the characteristics of the computer.
   kind: HostClaim
   metadata:
     name: my-host
+    namespace: myns
   spec:
     online: false
 
@@ -141,11 +145,14 @@ value depends on the characteristics of the computer.
       type: Ready
     - lastTransitionTime: "2024-03-29T14:33:19Z"
       status: "True"
-      type: AssociateBMH
+      type: AssociateHost
     lastUpdated: "2024-03-29T14:33:19Z"
   ```
 
-* I create three secrets in the same namespace ``my-user-data``,
+  The BareMetalHost resource is updated so that the consumerRef field points
+  to the HostClaim resource.
+
+* I create three secrets in the same namespace: ``my-user-data``,
   ``my-metadata``, and ``my-network-data``. I use the information from the
   status and meta data to customize the scripts they contain.
 * I modify the HostClaim to point to those secrets and start the server:
@@ -170,21 +177,23 @@ value depends on the characteristics of the computer.
         infra-kind: medium
   ```
 
+  Note: customDeploy must be supported as an alternative to images.
 * The workload is launched. When the machine is fully provisioned, the boolean
   field ready in the status becomes true. I can stop the server by changing
-  the online status. I can also perform a reboot by targeting specific
-  annotations in the reserved ``host.metal3.io`` domain.
+  the online status. I can also perform a reboot by adding a
+  ``reboot.metal3.io`` annotation on the HostClaim as I would do on the
+  BareMetalHost resource.
 * When I destroy the host, the association is broken and another user can take
   over the server.
 
 ##### Server Administrator Point of View
 
 As the owner of the bare-metal servers, I would like to easily control the users
-that can use my servers and control the information I share about the servers.
+that can use my servers and manage the information I share about the servers.
 
 In each namespace hosting BareMetalHosts, I define one
 or several HostDeployPolicy resources. Each resource defines a filter on the
-namespaces of the HostClaims in the field ``hostclaimNamespaces``.
+namespaces of the HostClaims in the field ``hostClaimNamespaces``.
 
 The specification of the HostDeployPolicy contains one or several of the
 optional fields:
@@ -199,7 +208,7 @@ optional fields:
   list.
 
 To successfully match, the namespace must fulfill the constraints of all the
-fields that are defined. An empty HostDeployPolicy authorizes all namespaces.
+defined fields. An empty HostDeployPolicy authorizes all namespaces.
 A HostClaim is authorized to bind a BareMetalHost if and only if the namespace
 of the HostClaim is successfully filtered by at least one HostDeployPolicy in
 the namespace of the BareMetalHost. In that case, the binding between the
@@ -218,7 +227,7 @@ metadata:
   name: policy
   namespace: infra
 spec:
-  hostclaimNamespaces:
+  hostClaimNamespaces:
     namespaces:
     - cluster1
     - cluster2
@@ -227,9 +236,9 @@ spec:
     labelsMatch: 'selectors/.*'
 ```
 
-will make the BareMetalHosts in namespace ``infra`` to HostClaims in namespaces
-``cluster1`` and ``cluster2``. All labels in domain ``selectors`` will be
-available for selection as annotations in ``mydomain`` for constructing
+will make the BareMetalHosts in the namespace ``infra`` available to HostClaims
+in the namespaces ``cluster1`` and ``cluster2``. All labels in the domain ``selectors``
+will be available for selection as annotations in ``mydomain`` for constructing
 cloud-init ``metadata``.
 
 #### Multi-tenancy
@@ -243,18 +252,18 @@ are created for each tenant of the infrastructure. They create
 standard cluster definitions in those namespaces.
 
 When the cluster is started, a HostClaim is created for each Metal3Machine
-associated to the cluster. The ``hostSelector`` is inherited from the
+associated with the cluster. The ``hostSelector`` is inherited from the
 Metal3Machine. As in the original workflow, it is used to choose the BareMetalHost
 associated with the cluster, but the associated BareMetalHost is not in the same
 namespace as the HostClaim. The exact definition of the BareMetalHost remains
-hidden from the cluster user, only a small parts of its status is copied
+hidden from the cluster user; only a small parts of its status is copied
 back to the HostClaim resource (actual power state). The status of the HostClaim
 contains a reference to the BareMetalHost and so to the HardwareData that is
 readable by the end user.
 
 With the help of HardwareData, the data template controller has enough details to
 compute the different secrets (userData, metaData and networkData) associated to
-the Metal3Machine. Those secrets are linked to the HostClaim and, ultimately, to
+the Metal3Machine. These secrets are linked to the HostClaim and, ultimately, to
 the BareMetalHost.
 
 When the cluster is modified, new Machine and Metal3Machine resources replace
@@ -264,46 +273,22 @@ new HostClaims, potentially belonging to other clusters.
 
 #### Compute Resources in Another Cluster
 
-As a user I would like to describe my cluster within a specific management
-cluster. However the resources I intend to use (such as BareMetalHosts or
+As a user, I would like to describe my cluster within a specific management
+cluster. However, the resources I intend to use (such as BareMetalHosts or
 KubeVirt virtual machines) will be defined in a separate cluster.
 
-The multi-tenancy extension for BareMetalHost is extended to HostClaims.
-Metal3Machine field ``identityRef`` points to a
+The [multi-tenancy extension](./cluster-api-provider-metal3/multi-tenancy_contract.md)
+for BareMetalHost is extended to HostClaims. The Metal3Machine field ``identityRef`` points to a
 secret containing a kubeconfig object. This kubeconfig will be utilized instead
 of the HostClaim controller service account to create and manage HostClaim
-resources
+resources on the remote cluster.
 
-```yaml
-  apiVersion: metal3.io/v1alpha1
-  kind: HostClaim
-  metadata:
-    name: host-claim-yyyy
-    namespace: user1-ns
-  spec:
-    credentials: bmh-cluster-credentials
-    userData:
-      name: user-data-yyyy
-    hostSelector:
-      ...
-    image:
-      checksum: https://image_url.qcow2.md5
-      format: qcow2
-      url: https://image_url.qcow2.md5
-    online: true
----
-apiVersion: v1
-kind: Secret
-metadata:
-  name: user-data-yyyy
-stringdata:
-  format: cloud-config
-  value: ....
-```
+HostClaims do not have an identityRef field; they must be located on the same
+cluster as the BareMetalHost.
 
-#### Manager Cluster Bootstrap
+#### Bootstrap of the Management Cluster
 
-As a cluster administrator I would like to install a new bare-metal cluster from
+As a cluster administrator, I would like to install a new bare-metal cluster from
 a transient cluster.
 
 The bootstrap process can be performed as usual from an ephemeral cluster
@@ -311,21 +296,21 @@ The bootstrap process can be performed as usual from an ephemeral cluster
 namespace (Cluster and BareMetalHost resources) must be respected. The
 BareMetalHost should be marked as movable.
 
-The only difference with the behavior without Host is the presence of an
-intermediate Host resource but the chain of resources is kept during the
+The only difference with the behavior without a HostClaim is the presence of an
+intermediate Host resource, but the chain of resources is maintained during the
 transfer and the pause annotation is used to stop Ironic.
 
 Because this operation is only performed by the administrator of a cluster
 manager, the fact that the cluster definition and the BareMetalHosts are in
 the same namespace should not be an issue.
 
-Tenant clusters using BareMetalHosts in other namespaces cannot be pivoted. It
-can be expected from a security point of view as it would give the bare-metal
+Tenant clusters using BareMetalHosts in other namespaces cannot be pivoted. This
+is expected from a security point of view, as it would give the bare-metal
 servers credentials to the tenants.
 
 When servers are managed on a separate cluster using the identityRef field in
 the machine template to access the BareMetalHost resources,
-pivot can be performed as usual but the tenant cluster will still need the
+pivoting can be performed as usual, but the tenant cluster will still need the
 cluster hosting Ironic.
 
 ## Design Details
@@ -335,25 +320,25 @@ cluster hosting Ironic.
 #### Split between cluster-api-provider-metal3 and baremetal-operator
 
 The HostClaim controller is part of the baremetal-operator project. A
-BareMetalHost controller must create the HardwareData with the right metadata
+BareMetalHost controller must create the HardwareData with the correct metadata
 and update those metadata when they are modified on the BareMetalHost. To
 reduce the load, it may be interesting to have a different set of events
-that trigger the main BareMetalHost controller from the ones that trigger
+that trigger the main BareMetalHost controller from those that trigger
 the synchronization of metadata.
 
 The introduction of HostClaims transfers the BareMetalHost selection process
 from the cluster-api-provider-metal3 project to the baremetal-operator project
 
-As we need to keep the legacy behavior, this will not simplify the code of
+As we need to maintain the legacy behavior, this will not simplify the code of
 the provider.
 
 #### Impact on Metal3Data controller
 
 The Metal3Data controller must target either BareMetalHost or HostClaims
-(in fact the HardwareData pointed by the HostClaim) for some template fields:
+(specifically the HardwareData pointed to by the HostClaim) for some template fields:
 
 * ``fromLabel`` and ``fromAnnotation`` where object is ``baremetalhost``.
-* ``fromHostInterface`` and ``fromAnnotation`` in network data definition
+* ``fromHostInterface`` and ``fromAnnotation`` in the network data definition
 
 The solution is to introduce an intermediate abstract object.
 
@@ -370,11 +355,11 @@ BareMetalHost deletion).
 
 When the HostClaim is deleted, the BareMetalHost is tagged with the node reuse
 label ``infrastructure.cluster.x-k8s.io/node-reuse`` with a value
-joining the namespace of the HostClaim and the value of the ``nodeReuse`` field.
+combining the namespace of the HostClaim and the value of the ``nodeReuse`` field.
 
 When a new HostClaim is created, if the ``nodeReuse`` field is set, the
-claim will try to bind a BareMetalHost with the label
-``infrastructure.cluster.x-k8s.io/node-reuse`` set to the right value.
+claim will attempt to bind to a BareMetalHost with the label
+``infrastructure.cluster.x-k8s.io/node-reuse`` set to the correct value.
 
 ### Risks and Mitigations
 
@@ -385,7 +370,7 @@ maintained in a coordinated manner.
 Each cluster manager must have a namespace for his HostClaims. This can
 be the cluster namespace or another one if the cluster description
 and the BareMetalHosts are not in the same management cluster. In this
-namespace he must have full rights on HostClaims and the associated secrets.
+namespace, he must have full rights on HostClaims and the associated secrets.
 
 He should also have read rights (but no modification permissions) on HardwareData
 in at least all the namespaces that allow his own HostClaim namespace for
@@ -395,36 +380,35 @@ user will not be able to access the HardwareData resource to build cloud-init me
 
 #### Security Impact of Making BareMetalHost Selection Cluster-wide
 
-The main difference between Metal3 machines and HostClaims it the
-selection process where a HostClaim can be bound to a BareMetalHost
-in another namespace. We must make sure that the binding is expected
-from both the owner of BareMetalHost resources and the HostClaim resource,
-especially when we upgrade the metal3 cluster api provider to a version
+The main difference between Metal3 machines and HostClaims is the
+selection process, where a HostClaim can be bound to a BareMetalHost
+in another namespace. We must ensure that the binding is expected
+by both the owner of BareMetalHost resources and the HostClaim resource,
+especially when we upgrade the metal3 Cluster API provider to a version
 supporting HostClaim.
 
 Choosing between HostClaims and BareMetalHost is done at the level of
 the Metal3Machine controller through a configuration flag. When the HostClaim
 mode is activated, all clusters are deployed with HostClaim resources.
 
-For the server administrator, the HostDeployPolicy restrict the BareMetalHosts
+For the server administrator, the HostDeployPolicy restricts the BareMetalHosts
 that can be used by HostClaims and the namespaces of those resources.
 
 The owner of the HostClaim restricts the server through the use of selectors.
-There can be only one server administrator and the tenants must trust the
-semantic of the labels used for selection so a new mechanism is not necessary
+There can be only one server administrator, and the tenants must trust the
+semantics of the labels used for selection, so a new mechanism is not necessary
 on the tenant side.
 
 #### Tenants Trying to Bypass the Selection Mechanism
 
 The fact that a HostClaim is bound to a specific BareMetalHost will appear
-as a label in the HostClaim and the HostClaim controller will use it to find
-the associated BareMetalHost. This label could be modified by a malicious
-tenant.
+in the status of the HostClaim and the HostClaim controller will use it to find
+the associated BareMetalHost. It could be modified by a malicious tenant if the
+RBAC privileges are too lenient on the HostClaim namespace.
 
-But the BareMetalHost has also a consumer reference. The label is only an
-indication of the binding. If the consumer reference is invalid (different
-from the HostClaim label), the label MUST be erased and the HostClaim
-controller MUST NOT accept the binding.
+But the BareMetalHost has also a consumer reference. The HostClaim status is only an
+indication of the binding. If the consumer reference and the HostClaim status
+differ, priority is given to the consumer reference on the BareMetalHost.
 
 #### Performance Impact
 
@@ -438,7 +422,7 @@ each Ironic action.
 
 There should be none: other components should mostly rely on Machine and Cluster
 objects. Some tools may look at Metal3Machine conditions where some condition
-names may be modified but the semantic of Ready condition will be preserved.
+names may be modified but the semantics of the Ready condition will be preserved.
 
 ### Work Items
 
@@ -457,11 +441,11 @@ names may be modified but the semantic of Ready condition will be preserved.
 ### Multi-Tenancy Without HostClaim
 
 We assume that we have a Kubernetes cluster managing a set of clusters for
-cluster administrators (referred to as tenants in the following). Multi-tenancy
-is a way to ensure that tenants have only control over their clusters.
+cluster administrators (referred to as tenants hereafter). Multi-tenancy
+is a way to ensure that tenants have control only over their clusters.
 
-There are at least two other ways for implementing multi-tenancy without
-HostClaim. These methods proxy the entire definition of the cluster
+There are at least two other ways to implement multi-tenancy without
+HostClaim. These methods either proxy the entire definition of the cluster
 or proxy the BareMetalHost itself.
 
 #### Isolation Through Overlays
@@ -472,9 +456,9 @@ namespace, but the cluster creation process ensures that resources
 from different clusters do not overlap.
 
 This approach was explored in the initial versions of the Kanod project.
-Clusters must be described by the tenant in a git repository and the
-descriptions are imported by a GitOps framework (argocd). The definitions are
-processed by an argocd plugin that translates the YAML expressing the user's
+Clusters must be described by the tenant in a Git repository, and the
+descriptions are imported by a GitOps framework (ArgoCD). The definitions are
+processed by an ArgoCD plugin that translates the YAML expressing the user's
 intent into Kubernetes resources, and the naming of resources created by
 this plugin ensures isolation.
 
@@ -511,13 +495,13 @@ requirements of the cluster. It may be updated by a
 checking the requirements of machine deployments and control-planes.
 
 The main security risk is that when a cluster releases a BareMetalHost, it may
-keep the credentials that provide full control over the server.
-This can be resolved if those credentials are temporary. In Kanod BareMetalPool
-obtain new servers from a REST API implemented by a
+retain the credentials that provide full control over the server.
+This can be resolved if those credentials are temporary. In Kanod, a BareMetalPool
+obtains new servers from a REST API implemented by a
 [BareMetalHost broker](https://gitlab.com/Orange-OpenSource/kanod/brokerdef).
-The broker implementation utilizes either the fact that Redfish is in fact an
-HTTP API to implement a proxy or the capability of Redfish to create new users
-with a Redfish ``operator`` role to implemented BareMetalHost resources with
+The broker implementation utilizes either the fact that Redfish is, in fact, an
+HTTP API to implement a proxy, or the capability of Redfish to create new users
+with a Redfish ``operator`` role to implement BareMetalHost resources with
 a limited lifespan.
 
 A pool is implemented as an API that is protected by a set of credentials that
@@ -530,7 +514,7 @@ The advantages of this approach are:
 * Cluster administrators have full access to the BMC and can configure servers
   according to their needs using custom procedures that are not exposed by
   standard Metal3 controllers.
-* Network isolation can be established before the BareMetalHost is created in
+* Network isolation can be established before the BareMetalHost is created within
   the scope of the cluster. There is no transfer of servers from one network
   configuration to another, which could invalidate parts of the introspection.
 
@@ -543,40 +527,40 @@ The disadvantages of the BareMetalPool approach are:
 * To have full dynamism over the pool of servers, a new type of autoscaler is
   needed.
 * Unnecessary inspection of servers are performed when they are transferred
-  from a cluster (tenant) to another.
+  from one cluster (tenant) to another.
 * The current implementation of the proxy is limited to the Redfish protocol
   and would require significant work for IPMI.
 
 ### Alternative Implementations of HostClaims
 
-#### Not using HardwareData
+#### Not Using HardwareData
 
 The first proof of concept of HostClaims copied inspection data from the BareMetalHost
 to the HostClaim. There was no inventory of available hardware visible to the end-user.
-The code was also more complex especially because of metadata synchronization (details in next
-section).
+The code was also more complex especially because of metadata synchronization (details in
+the next section).
 
 #### Alternative Handling of Metadata
 
-Here are some alternative handling of metadata associated to BareMetalHosts
+Here are some alternative methods for handling metadata associated with BareMetalHosts
 and used by the Metal3 provider (selection and construction of cloud-init/ignition
 data):
 
-* **Keep metadata in baremetalhost. Copy to HostClaims** : the purpose of HostClaims is to hide
+* **Keep metadata in BareMetalHost. Copy to HostClaims** : the purpose of HostClaims is to hide
   BareMetalHost from users. Selectors and important metadata values would be
   hidden from their user. Even if infrastructure managers can convey information
   through other means, this is awkward. The proof of concept had complex rules to maintain
   HostClaim metadata synchronized with BareMetalHosts.
 * **Metadata in HardwareData without synchronization** : infrastructure managers
-  must then create empty HardwareData to define the metadata visible from end users. It simplifies
-  HostDeployPolicy. The main drawback is that it is a non compatible change with current deployments
+  must then create empty HardwareData to define the metadata visible to end users. This simplifies
+  HostDeployPolicy. The main drawback is that it is a non-compatible change with current deployments
   of BareMetalHosts. Process annotating BareMetalHosts automatically would require modifications.
-* **Metadata in a new custom resource** : This custom resource would only exist for this purpose. Too
-  many custom resources for a single concept is not a good idea.
+* **Metadata in a new custom resource** : This custom resource would only exist for this purpose.
+  Having too many custom resources for a single concept is not a good idea.
 * **Keep some metadata on HardwareData not automatically synchronized with BareMetalHost metadata** :
   metadata on HardwareData with keys that are not explicitly handled by the HostDeployPolicy would
-  be preserved. This is complex. The only purpose would be for automatic process labelling HardwareData
-  from their content, but they can always label BareMetalHost instead of HardwareData. The cost
+  be preserved. This is complex. The only purpose would be for automatic processes labeling HardwareData
+  based on their content, but they can always label BareMetalHost instead of HardwareData. The cost
   of maintaining such partial synchronization is high.
 
 ## References
